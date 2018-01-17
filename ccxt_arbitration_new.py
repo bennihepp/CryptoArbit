@@ -168,6 +168,21 @@ for iteration in range(num_iterations):
         gdax_balance_crypto = gdax_balance[crypto]["free"]
         balances_up_to_date = True
 
+        # Get server time to check for recent orders later on
+        kraken_server_time = None
+        try:
+            kraken_server_time = kraken_client.query_public("Time")
+            if len(kraken_server_time["error"]) > 0:
+                raise Exception("{}".format(kraken_server_time["error"]))
+        except Exception as e:
+            logging.info("Unable to get server time ({}).".format(e))
+            logging.info("Waiting ...")
+            logging.info("")
+            time.sleep(trial_sleep_time)
+            continue
+        kraken_server_time = kraken_server_time["result"]["unixtime"]
+        logging.info("Kraken server time: {:d}".format(kraken_server_time))
+
     logging.info("Kraken account balance:")
     logging.info("  {:.2f} {}".format(kraken_balance_fiat, fiat))
     logging.info("  {:.4f} {}".format(kraken_balance_crypto, crypto))
@@ -221,8 +236,6 @@ for iteration in range(num_iterations):
     gdax_bid_price = round(gdax_bid_price, fiat_ndigits)
     assert gdax_ask_price >= gdax_bid_price
 
-    # Get server time to check for recent orders later on
-    kraken_server_time = kraken_ob["timestamp"]
     # Remember time so we can cancel if adding Kraken order takes too long.
     order_book_request_time = time.time()
 
@@ -371,6 +384,9 @@ for iteration in range(num_iterations):
         time.sleep(10)
         continue
 
+    # Make sure we check balances on next iteration in case something goes wrong.
+    balances_up_to_date = False
+
     #
     # Kraken Add buy order
     #
@@ -415,20 +431,9 @@ for iteration in range(num_iterations):
         # logging.info("kraken_open_orders:", open_orders)
         matching_order_ids = []
         check_order_start_time = time.time()
-        # while len(matching_order_ids) == 0:
-        #     logging.info("Trying to find Kraken order ...")
-        #     check_order_time_limit_reached = time.time() - check_order_start_time > check_order_time
-        #     orders = ccxt_retry(kraken.fetchOrders, symbol, since=kraken_server_time)
-        #     logging.info("Orders:".format(open_orders))
-        #     matching_order_ids = find_matching_orders(orders, match_lambda)
-        #     if len(matching_order_ids) == 0 and check_order_time_limit_reached:
-        #         return None
-        #     if len(matching_order_ids) > 1:
-        #         logging.warning("WARNING: Multiple matching orders found.")
-        #         logging.warning("Matching orders: {}".format(matching_order_ids))
-
         while len(matching_order_ids) == 0:
-            logging.info("Trying to find order ...")
+            logging.info("Trying to find order (time={}, kraken_time={}) ...".format(
+                datetime.datetime.now(), kraken_server_time))
             check_order_time_limit_reached = time.time() - check_order_start_time > check_order_time
             open_orders = kraken_wrapper.retry_on_error(
                 kraken_get_open_orders)
@@ -445,7 +450,7 @@ for iteration in range(num_iterations):
             if len(matching_order_ids) > 1:
                 logging.warning("WARNING: Multiple matching orders found.")
                 logging.warning("Matching orders: {}".format(matching_order_ids))
-        order_id = matching_order_ids[1]
+        order_id = matching_order_ids[0]
         return order_id
 
     def kraken_check_order_info(check_order_time, userref):
@@ -477,7 +482,7 @@ for iteration in range(num_iterations):
         if kraken_order_result is not None:
             kraken_order_id = kraken_order_result["id"]
         else:
-            logging.warning("Exceeded time limit between order book request and order.")
+            logging.warning("Order submission failed.")
             kraken_order_id = kraken_check_order_info(check_order_time, kraken_userref)
             if kraken_order_id is None:
                 logging.info("Kraken order did not go through.")
@@ -576,8 +581,6 @@ for iteration in range(num_iterations):
 
     else:
         raise RuntimeError("Unknown arbitration mode: {}".format(arbitration_mode))
-
-    balances_up_to_date = False
 
     #
     # Wait for orders to finish
