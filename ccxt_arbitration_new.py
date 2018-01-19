@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import datetime
 import math
@@ -11,11 +12,10 @@ import ccxt
 import ccxt_utils
 
 import gdax_wrapper
-# import gdax_accounts
 import kraken_wrapper
-# import kraken_accounts
 
-logging.basicConfig(filename='ccxt_arbitration_new.log', level=logging.DEBUG)
+home_folder = os.environ["HOME"]
+logging.basicConfig(filename=os.path.join(home_folder, 'ccxt_arbitration_new.log'), level=logging.DEBUG)
 logging.getLogger().addHandler(logging.StreamHandler())
 
 BUY_KRAKEN_SELL_GDAX = 0
@@ -29,6 +29,7 @@ ARBITRATION_MODES_STR = {
 random.seed()
 
 api_rate_limit = 1.0
+balance_update_interval = 10
 
 crypto = "ETH"
 fiat = "EUR"
@@ -48,12 +49,17 @@ max_volume_crypto = 0.5
 min_gains_percentage = {
     BUY_KRAKEN_SELL_GDAX: [2.0, 1.5, 1.0, 0.75],
     # BUY_GDAX_SELL_KRAKEN: [0.0, -0.5, -1.0],
-    BUY_GDAX_SELL_KRAKEN: [0.4, 0.2, 0.0, -0.2],
+    # BUY_GDAX_SELL_KRAKEN: [0.4, 0.2, 0.0, -0.2],
+    BUY_GDAX_SELL_KRAKEN: [0.2, -0.2, -0.2, -0.2],
 }
 min_fiat_reserves = {
-    BUY_KRAKEN_SELL_GDAX: [0.0, 0.25, 0.5, 0.75],
-    BUY_GDAX_SELL_KRAKEN: [0.0, 0.25, 0.5, 0.75],
+    BUY_KRAKEN_SELL_GDAX: [0.0, 0.4, 0.6, 0.75],
+    BUY_GDAX_SELL_KRAKEN: [0.0, 0.25, 0.4, 0.6],
 }
+# min_fiat_reserves = {
+#     BUY_KRAKEN_SELL_GDAX: [0.0, 2500, 5000, 7500],
+#     BUY_GDAX_SELL_KRAKEN: [0.0, 2500, 5000, 7500],
+# }
 min_relative_gains = {}
 for key, gains in min_gains_percentage.items():
     min_relative_gains[key] = [gain / 100.0 for gain in gains]
@@ -149,7 +155,7 @@ else:
 total_balance_fiat_begin = None
 
 num_arbitrations = 0
-balances_up_to_date = False
+balances_update_countdown = 0
 for iteration in range(num_iterations):
 
     if simulate:
@@ -158,7 +164,10 @@ for iteration in range(num_iterations):
         logging.info("---------- ARBITRATION ----------")
     logging.info("Time: {}".format(datetime.datetime.now()))
 
-    if not balances_up_to_date:
+    if balances_update_countdown <= 0:
+        logging.info("Retrieving account balances")
+        balances_update_countdown = balance_update_interval
+
         # Get Kraken account balance
         kraken_balance = ccxt_retry(kraken.fetchBalance)
         kraken_balance_fiat = kraken_balance[fiat]["free"]
@@ -166,7 +175,6 @@ for iteration in range(num_iterations):
         gdax_balance = ccxt_retry(gdax.fetchBalance)
         gdax_balance_fiat = gdax_balance[fiat]["free"]
         gdax_balance_crypto = gdax_balance[crypto]["free"]
-        balances_up_to_date = True
 
         # Get server time to check for recent orders later on
         kraken_server_time = None
@@ -182,6 +190,8 @@ for iteration in range(num_iterations):
             continue
         kraken_server_time = kraken_server_time["result"]["unixtime"]
         logging.info("Kraken server time: {:d}".format(kraken_server_time))
+    else:
+        balances_update_countdown -= 1
 
     logging.info("Kraken account balance:")
     logging.info("  {:.2f} {}".format(kraken_balance_fiat, fiat))
@@ -288,7 +298,7 @@ for iteration in range(num_iterations):
             order_volume_crypto)
 
     try:
-        with open("ccxt_arbitration_gains.log", "a") as fout:
+        with open(os.path.join(home_folder, 'ccxt_arbitration_gains.log'), 'a') as fout:
             iso_time = datetime.datetime.now().isoformat()
             fout.write("{:s} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f} {:f}\n".format(
                 iso_time, exp_gains_fiat[BUY_KRAKEN_SELL_GDAX], exp_gains_fiat[BUY_GDAX_SELL_KRAKEN],
@@ -308,8 +318,8 @@ for iteration in range(num_iterations):
         and gdax_balance_fiat / total_balance_fiat >= min_fiat_reserve \
         and gdax_balance_fiat >= buy_safety_factor_fiat * order_volume_crypto * buy_volumes_fiat[BUY_GDAX_SELL_KRAKEN] \
         and kraken_balance_crypto >= order_volume_crypto:
-            print("{} is possible with min_relative_gain={}, min_fiat_reserve={}".
-                format(ARBITRATION_MODES_STR[BUY_GDAX_SELL_KRAKEN], min_relative_gain, min_fiat_reserve))
+            logging.info("{} is possible with min_relative_gain={} %, min_fiat_reserve={}".
+                format(ARBITRATION_MODES_STR[BUY_GDAX_SELL_KRAKEN], 100 * min_relative_gain, min_fiat_reserve))
             valid[BUY_GDAX_SELL_KRAKEN] = True
             chosen_min_relative_gains[BUY_GDAX_SELL_KRAKEN] = min_relative_gain
             break
@@ -319,8 +329,8 @@ for iteration in range(num_iterations):
         and kraken_balance_fiat / total_balance_fiat >= min_fiat_reserve \
         and kraken_balance_fiat >= buy_safety_factor_fiat * order_volume_crypto * buy_volumes_fiat[BUY_KRAKEN_SELL_GDAX] \
         and gdax_balance_crypto >= order_volume_crypto:
-            print("{} is possible with min_relative_gain={}, min_fiat_reserve={}".
-                format(ARBITRATION_MODES_STR[BUY_KRAKEN_SELL_GDAX], min_relative_gain, min_fiat_reserve))
+            logging.info("{} is possible with min_relative_gain={} %, min_fiat_reserve={}".
+                format(ARBITRATION_MODES_STR[BUY_KRAKEN_SELL_GDAX], 100 * min_relative_gain, min_fiat_reserve))
             valid[BUY_KRAKEN_SELL_GDAX] = True
             chosen_min_relative_gains[BUY_KRAKEN_SELL_GDAX] = min_relative_gain
             break
@@ -385,7 +395,7 @@ for iteration in range(num_iterations):
         continue
 
     # Make sure we check balances on next iteration in case something goes wrong.
-    balances_up_to_date = False
+    balances_update_countdown = 0
 
     #
     # Kraken Add buy order
@@ -711,12 +721,13 @@ for iteration in range(num_iterations):
 
     logging.info("Arbitration done.")
     logging.info("Number of arbitrations done: {:d}".format(num_arbitrations))
-    logging.info("")
 
     gain_fiat_since_begin = total_balance_fiat_after - total_balance_fiat_begin
-    print("Total gain since start: {:.2f} {}".format(gain_fiat_since_begin, fiat))
+    logging.info("Total gain since start: {:.2f} {}".format(gain_fiat_since_begin, fiat))
+    logging.info("")
+
     if gain_fiat_since_begin < - max_overall_fiat_loss:
-        print("ERROR: Overall fiat loss is too high.")
+        logging.error("ERROR: Overall fiat loss is too high.")
         logging.error("Exiting")
         sys.exit(1)
 
